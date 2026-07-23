@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Video Stream</title>
+    <style>
+        body { margin: 0; background-color: #000; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; flex-direction: column; }
+        video { width: 100%; max-width: 1200px; height: auto; border-radius: 8px; background: #111; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .status { position: absolute; top: 20px; left: 20px; font-weight: bold; padding: 10px 15px; background: rgba(0, 0, 0, 0.7); border-radius: 6px; }
+    </style>
+</head>
+<body>
+    <div id="statusUI" class="status">Initializing Signaling...</div>
+    <video id="remoteVideo" autoplay playsinline controls></video>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const sessionId = urlParams.get('session_id');
+        const apiBaseUrl = urlParams.get('api'); 
+        const statusUI = document.getElementById('statusUI');
+        
+        if (!sessionId || !apiBaseUrl) {
+            statusUI.innerText = "Error: Invalid Connection Token or API route.";
+            throw new Error("Missing session parameters");
+        }
+
+        const pc = new RTCPeerConnection({
+            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+        });
+
+        pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+
+        pc.ontrack = (event) => {
+            statusUI.innerText = "Stream Connected Live \u{1F7E2}";
+            const video = document.getElementById('remoteVideo');
+            if (video.srcObject !== event.streams[0]) {
+                video.srcObject = event.streams[0];
+            }
+        };
+
+        // Vanilla ICE Batching
+        pc.onicegatheringstatechange = async () => {
+            if (pc.iceGatheringState === 'complete') {
+                statusUI.innerText = "Waking Target Device via Push Node...";
+                
+                await fetch(`${apiBaseUrl}/api/webrtc/send_offer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        sdp: pc.localDescription.sdp
+                    })
+                });
+
+                pollForAnswer();
+            }
+        };
+
+        async function createOffer() {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+        }
+
+        let pollInterval;
+        async function pollForAnswer() {
+            pollInterval = setInterval(async () => {
+                try {
+                    const resp = await fetch(`${apiBaseUrl}/api/webrtc/get_answer?session_id=${sessionId}`);
+                    const data = await resp.json();
+                    
+                    if (data.ready) {
+                        clearInterval(pollInterval);
+                        statusUI.innerText = "Handshake Finalizing. Establishing P2P Bridge...";
+                        
+                        const answer = new RTCSessionDescription({ type: 'answer', sdp: data.sdp });
+                        await pc.setRemoteDescription(answer);
+                    }
+                } catch (e) {
+                    console.error("Polling error:", e);
+                }
+            }, 2000); 
+        }
+
+        createOffer();
+    </script>
+</body>
+</html>
